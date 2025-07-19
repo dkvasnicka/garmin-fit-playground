@@ -1,3 +1,4 @@
+use average::WeightedMean;
 use fitparser::{self, Value};
 use itertools::Itertools;
 use std::{env, fs::File};
@@ -66,6 +67,13 @@ fn main() {
 
     println!(
         "rear gear weighted median: {:?}",
-        weighted_median(rear_gears.as_mut_slice())
+        weighted_median(rear_gears.as_mut_slice()).unwrap()
     );
+
+    let wm: WeightedMean = rear_gears
+        .iter()
+        .map(|ig| (ig.get_value(), ig.get_weight()))
+        .collect();
+
+    println!("  rear gear weighted mean: {:?}", wm.mean().round());
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+average = "0.16.0"
 fitparser = "0.10.0"
 itertools = "0.14.0"
 qsv-stats = "0.36.0"
