@@ -43,7 +43,7 @@ fn main() {
 
                 // println!("{:?}", data);
                 let gear_nums = match gcd_val.value() {
-                    Value::UInt32(v) => v.swap_bytes().to_ne_bytes(),
+                    Value::UInt32(v) => v.to_be_bytes(),
                     _ => panic!("unsupported gear data"),
                 };
                 let timestamp = match ts_field.value() {
