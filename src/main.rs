@@ -75,5 +75,5 @@ fn main() {
         .map(|ig| (ig.get_value(), ig.get_weight()))
         .collect();
 
-    println!("  rear gear weighted mean: {:?}", wm.mean().round());
+    println!("  rear gear weighted mean: {:?}", wm.mean());
 }
