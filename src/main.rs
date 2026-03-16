@@ -1,13 +1,15 @@
 use average::WeightedMean;
 use fitparser::{self, Value};
 use itertools::Itertools;
-use std::{env, fs::File};
+use std::{collections::BTreeMap, env, fs::File};
 use weighted_median::{Data, weighted_median};
 
 struct InGear {
     pub gear: u8,
     pub duration: i64,
     pub pedalling: u8, // 0/1
+    pub start_ts: i64,
+    pub end_ts: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -36,8 +38,44 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut fp = File::open(&args[1]).unwrap();
 
-    let chunked_evts = fitparser::from_reader(&mut fp)
-        .unwrap()
+    let chainring_args: Option<(u8, u8)> = if args.len() >= 4 {
+        Some((
+            args[2].parse::<u8>().expect("current_chainring must be a number"),
+            args[3].parse::<u8>().expect("hypothetical_chainring must be a number"),
+        ))
+    } else {
+        None
+    };
+
+    let all_records = fitparser::from_reader(&mut fp).unwrap();
+
+    // Extract power data: timestamp -> watts
+    let power_data: BTreeMap<i64, u16> = all_records
+        .iter()
+        .filter_map(|r| {
+            let ts = r
+                .fields()
+                .iter()
+                .find(|f| f.name() == "timestamp")
+                .and_then(|f| match f.value() {
+                    Value::Timestamp(d) => Some(d.timestamp()),
+                    _ => None,
+                })?;
+            let power = r
+                .fields()
+                .iter()
+                .find(|f| f.name() == "power")
+                .and_then(|f| match f.value() {
+                    Value::UInt16(v) => Some(*v),
+                    _ => None,
+                })?;
+            Some((ts, power))
+        })
+        .collect();
+
+    let ride_start_ts = power_data.keys().next().copied().unwrap_or(0);
+
+    let chunked_evts = all_records
         .into_iter()
         .filter_map(|data| {
             data.fields()
@@ -67,8 +105,9 @@ fn main() {
     let mut rear_gears = relevant_events
         .tuples::<(_, _)>()
         .map(|(g, c)| {
-            let mut cadences =
-                c.1.map(|f| match f.value {
+            let mut cadences = c
+                .1
+                .map(|f| match f.value {
                     Value::UInt8(v) => v.to_be(),
                     _ => panic!("invalid cadence data"),
                 })
@@ -94,6 +133,8 @@ fn main() {
                 gear,
                 duration: next.timestamp - prev.timestamp,
                 pedalling: (prev.median_cadence.unwrap() > 10) as u8,
+                start_ts: prev.timestamp,
+                end_ts: next.timestamp,
             }
         })
         .collect_vec();
@@ -109,4 +150,70 @@ fn main() {
         .collect();
 
     println!("  rear gear weighted mean: {:?}", wm.mean());
+
+    // Chainring comparison analysis
+    if let Some((current, hypothetical)) = chainring_args {
+        let factor = hypothetical as f64 / current as f64;
+        let lightest_sections: Vec<&InGear> = rear_gears
+            .iter()
+            .filter(|g| g.gear == 1 && g.pedalling == 1)
+            .collect();
+
+        println!(
+            "\n--- Chainring comparison: {}T -> {}T (factor: {:.3}) ---",
+            current, hypothetical, factor
+        );
+
+        if lightest_sections.is_empty() {
+            println!(
+                "Lightest gear was NEVER used while pedalling."
+            );
+            println!(
+                "The bigger chainring is automatically better -- you have headroom"
+            );
+            println!("and bigger cogs = better chain efficiency.");
+        } else {
+            let total_time: i64 = lightest_sections.iter().map(|s| s.duration).sum();
+            println!(
+                "Lightest gear used in {} section(s) while pedalling, total {}s",
+                lightest_sections.len(),
+                total_time
+            );
+
+            for (i, section) in lightest_sections.iter().enumerate() {
+                let elapsed_start = section.start_ts - ride_start_ts;
+                let elapsed_end = section.end_ts - ride_start_ts;
+
+                print!(
+                    "\n  Section {} ({}:{:02}-{}:{:02}, {}s): ",
+                    i + 1,
+                    elapsed_start / 60,
+                    elapsed_start % 60,
+                    elapsed_end / 60,
+                    elapsed_end % 60,
+                    section.duration
+                );
+
+                let section_power: Vec<u16> = power_data
+                    .range(section.start_ts..=section.end_ts)
+                    .map(|(_, &w)| w)
+                    .collect();
+
+                if section_power.is_empty() {
+                    println!("no power data for this section");
+                } else {
+                    let avg_power: f64 =
+                        section_power.iter().map(|&w| w as f64).sum::<f64>()
+                            / section_power.len() as f64;
+                    let hypothetical_power = avg_power * factor;
+                    println!(
+                        "avg {:.0}W -> would need {:.0}W (+{:.0}W)",
+                        avg_power,
+                        hypothetical_power,
+                        hypothetical_power - avg_power
+                    );
+                }
+            }
+        }
+    }
 }
