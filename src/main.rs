@@ -30,6 +30,11 @@ impl Data for InGear {
     }
 }
 
+struct PowerData {
+    pub power: u16,
+    pub cadence: u8,
+}
+
 fn main() {
     println!(
         "Parsing FIT files using Profile version: {:?}",
@@ -40,8 +45,12 @@ fn main() {
 
     let chainring_args: Option<(u8, u8)> = if args.len() >= 4 {
         Some((
-            args[2].parse::<u8>().expect("current_chainring must be a number"),
-            args[3].parse::<u8>().expect("hypothetical_chainring must be a number"),
+            args[2]
+                .parse::<u8>()
+                .expect("current_chainring must be a number"),
+            args[3]
+                .parse::<u8>()
+                .expect("hypothetical_chainring must be a number"),
         ))
     } else {
         None
@@ -50,7 +59,7 @@ fn main() {
     let all_records = fitparser::from_reader(&mut fp).unwrap();
 
     // Extract power data: timestamp -> watts
-    let power_data: BTreeMap<i64, u16> = all_records
+    let power_data: BTreeMap<i64, PowerData> = all_records
         .iter()
         .filter_map(|r| {
             let ts = r
@@ -61,6 +70,14 @@ fn main() {
                     Value::Timestamp(d) => Some(d.timestamp()),
                     _ => None,
                 })?;
+            let cadence =
+                r.fields()
+                    .iter()
+                    .find(|f| f.name() == "cadence")
+                    .and_then(|f| match f.value() {
+                        Value::UInt8(v) => Some(*v),
+                        _ => None,
+                    })?;
             let power = r
                 .fields()
                 .iter()
@@ -69,7 +86,7 @@ fn main() {
                     Value::UInt16(v) => Some(*v),
                     _ => None,
                 })?;
-            Some((ts, power))
+            Some((ts, PowerData { power, cadence }))
         })
         .collect();
 
@@ -105,9 +122,8 @@ fn main() {
     let mut rear_gears = relevant_events
         .tuples::<(_, _)>()
         .map(|(g, c)| {
-            let mut cadences = c
-                .1
-                .map(|f| match f.value {
+            let mut cadences =
+                c.1.map(|f| match f.value {
                     Value::UInt8(v) => v.to_be(),
                     _ => panic!("invalid cadence data"),
                 })
@@ -165,12 +181,8 @@ fn main() {
         );
 
         if lightest_sections.is_empty() {
-            println!(
-                "Lightest gear was NEVER used while pedalling."
-            );
-            println!(
-                "The bigger chainring is automatically better -- you have headroom"
-            );
+            println!("Lightest gear was NEVER used while pedalling.");
+            println!("The bigger chainring is automatically better -- you have headroom");
             println!("and bigger cogs = better chain efficiency.");
         } else {
             let total_time: i64 = lightest_sections.iter().map(|s| s.duration).sum();
@@ -196,19 +208,25 @@ fn main() {
 
                 let section_power: Vec<u16> = power_data
                     .range(section.start_ts..=section.end_ts)
-                    .map(|(_, &w)| w)
+                    .map(|(_, PowerData { power, cadence: _ })| power.to_owned())
+                    .collect();
+                let section_cadence: Vec<u8> = power_data
+                    .range(section.start_ts..=section.end_ts)
+                    .map(|(_, PowerData { power: _, cadence })| cadence.to_owned())
                     .collect();
 
                 if section_power.is_empty() {
                     println!("no power data for this section");
                 } else {
-                    let avg_power: f64 =
-                        section_power.iter().map(|&w| w as f64).sum::<f64>()
-                            / section_power.len() as f64;
+                    let avg_power: f64 = section_power.iter().map(|&w| w as f64).sum::<f64>()
+                        / section_power.len() as f64;
+                    let avg_cadence: f64 = section_cadence.iter().map(|&w| w as f64).sum::<f64>()
+                        / section_cadence.len() as f64;
                     let hypothetical_power = avg_power * factor;
                     println!(
-                        "avg {:.0}W -> would need {:.0}W (+{:.0}W)",
+                        "avg {:.0}W @ {:.0} RPM -> would need {:.0}W ({:.0}W Δ)",
                         avg_power,
+                        avg_cadence,
                         hypothetical_power,
                         hypothetical_power - avg_power
                     );
